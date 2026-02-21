@@ -116,7 +116,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         const symbol   = item.Symbol   || 'USDT-MXN';
 
         // RFQ lasts 10 seconds
-        const expiresAt = new Date(Date.now() + 10_000);
+        const expiresAt = new Date(Date.now() + 15_000);
 
         console.log(`[RFQ] QuoteReqID=${quoteReqId} qty=${orderQty} expires in 10s`);
 
@@ -138,7 +138,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             OfferPx:       offer().toString(),
             OfferAmt:      (offer() * parseFloat(orderQty)).toFixed(2),
             AmountCurrency:'MXN',
-            ValidUntilTime: new Date(Date.now() + 3_000).toISOString(), // price valid 3s
+            ValidUntilTime: new Date(Date.now() + 10_000).toISOString(), // price valid 3s
             EndTime:        expiresAt.toISOString(),                     // RFQ ends at 10s
             Timestamp:      new Date().toISOString(),
             SubmitTime:     new Date().toISOString(),
@@ -165,7 +165,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
               return;
             }
             send(makeQuote('Open'));
-          }, 2000);
+          }, 9999);
           timers.push(refresh);
         }, 150);
         timeouts.push(t1);

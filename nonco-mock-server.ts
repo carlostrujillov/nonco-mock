@@ -4,20 +4,40 @@ import { randomUUID } from 'crypto';
 
 const PORT = parseInt(process.env.PORT || '8787', 10);
 
-// --- Market simulation ---
-let mid = 17.25;
-const SPREAD = 0.04;
-const CLAMP_LO = 16.50;
-const CLAMP_HI = 18.00;
+// --- Real USD/MXN price feed from Yahoo Finance ---
+let mid = 17.25; // fallback until first fetch
 
-setInterval(() => {
-  mid += (Math.random() - 0.5) * 0.003; // ±0.0015
-  mid = Math.max(CLAMP_LO, Math.min(CLAMP_HI, mid));
-}, 500);
+async function fetchMid(): Promise<void> {
+  try {
+    const res = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/USDMXN=X', {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+    });
+    const data = await res.json() as any;
+    const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
+    if (price && typeof price === 'number') {
+      mid = price;
+      console.log(`[MID] USD/MXN = ${mid.toFixed(4)} (fetched from Yahoo)`);
+    } else {
+      console.log(`[MID] USD/MXN = ${mid.toFixed(4)} (cached — bad response)`);
+    }
+  } catch {
+    console.log(`[MID] USD/MXN = ${mid.toFixed(4)} (cached — fetch failed)`);
+  }
+}
 
-function bid() { return +(mid - SPREAD / 2).toFixed(4); }
-function offer() { return +(mid + SPREAD / 2).toFixed(4); }
-function sessionId() { return Array.from({ length: 10 }, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[Math.floor(Math.random() * 26)]).join(''); }
+// Fetch immediately on startup, then every 30 seconds
+fetchMid();
+setInterval(fetchMid, 30_000);
+
+// Spread: 1.5 centavos each side
+function bid():   number { return +((mid - 0.015).toFixed(4)); }
+function offer(): number { return +((mid + 0.015).toFixed(4)); }
+
+function sessionId(): string {
+  return Array.from({ length: 10 }, () =>
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[Math.floor(Math.random() * 26)]
+  ).join('');
+}
 
 // --- HTTP + WS setup ---
 const server = createServer((_req, res) => {
@@ -29,10 +49,8 @@ const wss = new WebSocketServer({ server, path: '/ws/v1' });
 
 wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   console.log(`[CONN] Client connected from ${req.socket.remoteAddress}`);
-  const timers: ReturnType<typeof setInterval>[] = [];
-  const timeouts: ReturnType<typeof setTimeout>[] = [];
-
-  // Track active RFQs for cancellation
+  const timers:   ReturnType<typeof setInterval>[] = [];
+  const timeouts: ReturnType<typeof setTimeout>[]  = [];
   const activeRfqs = new Map<string, { cancelled: boolean }>();
 
   const send = (msg: object) => {
@@ -62,19 +80,17 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         } else if (name === 'Balance') {
           send({
             reqid: msg.reqid, type: 'Balance', data: [
-              { Currency: 'MXN', Available: '5000000', Total: '5000000' },
-              { Currency: 'USDT', Available: '250000', Total: '250000' },
+              { Currency: 'MXN',  Available: '5000000', Total: '5000000' },
+              { Currency: 'USDT', Available: '250000',  Total: '250000'  },
             ],
           });
         } else if (name === 'MarketDataSnapshot') {
-          // Initial snapshot
           send({
             reqid: msg.reqid, type: 'MarketDataSnapshot', data: [{
               Symbol: 'USDT-MXN', BidPx: bid().toString(), OfferPx: offer().toString(),
               BidSize: '50000', OfferSize: '50000', Timestamp: new Date().toISOString(),
             }],
           });
-          // Updates every 1s
           const t = setInterval(() => {
             send({
               type: 'MarketDataSnapshot', data: [{
@@ -85,7 +101,6 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           }, 1000);
           timers.push(t);
         } else {
-          // Quote, ExecutionReport, Trade, Order → empty snapshot
           send({ reqid: msg.reqid, type: name, data: [] });
         }
       }
@@ -96,36 +111,37 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     if (msg.type === 'QuoteRequest' && Array.isArray(msg.data)) {
       for (const item of msg.data) {
         const quoteReqId: string = item.QuoteReqID;
-        const rfqId = randomUUID();
+        const rfqId    = randomUUID();
         const orderQty = item.OrderQty || '10000';
-        const symbol = item.Symbol || 'USDT-MXN';
-        const expiresAt = new Date(Date.now() + 3 * 60 * 1000);
+        const symbol   = item.Symbol   || 'USDT-MXN';
 
-        console.log(`[RFQ] Received QuoteReqID=${quoteReqId} qty=${orderQty} symbol=${symbol}`);
+        // RFQ lasts 10 seconds
+        const expiresAt = new Date(Date.now() + 10_000);
+
+        console.log(`[RFQ] QuoteReqID=${quoteReqId} qty=${orderQty} expires in 10s`);
 
         const rfqState = { cancelled: false };
         activeRfqs.set(quoteReqId, rfqState);
 
-        const makeQuote = (status: string, extraFields: object = {}) => ({
+        const makeQuote = (status: string) => ({
           type: 'Quote',
           data: [{
-            RFQID: rfqId,
-            QuoteReqID: quoteReqId,
-            QuoteID: randomUUID(),
-            QuoteStatus: status,
-            Symbol: symbol,
-            Currency: 'USDT',
-            OrderQty: orderQty,
-            BidPx: bid().toString(),
-            BidAmt: (bid() * parseFloat(orderQty)).toFixed(2),
-            OfferPx: offer().toString(),
-            OfferAmt: (offer() * parseFloat(orderQty)).toFixed(2),
-            AmountCurrency: 'MXN',
-            ValidUntilTime: new Date(Date.now() + 3000).toISOString(),
-            EndTime: expiresAt.toISOString(),
-            Timestamp: new Date().toISOString(),
-            SubmitTime: new Date().toISOString(),
-            ...extraFields,
+            RFQID:         rfqId,
+            QuoteReqID:    quoteReqId,
+            QuoteID:       randomUUID(),
+            QuoteStatus:   status,
+            Symbol:        symbol,
+            Currency:      'USDT',
+            OrderQty:      orderQty,
+            BidPx:         bid().toString(),
+            BidAmt:        (bid()   * parseFloat(orderQty)).toFixed(2),
+            OfferPx:       offer().toString(),
+            OfferAmt:      (offer() * parseFloat(orderQty)).toFixed(2),
+            AmountCurrency:'MXN',
+            ValidUntilTime: new Date(Date.now() + 3_000).toISOString(), // price valid 3s
+            EndTime:        expiresAt.toISOString(),                     // RFQ ends at 10s
+            Timestamp:      new Date().toISOString(),
+            SubmitTime:     new Date().toISOString(),
           }],
         });
 
@@ -137,13 +153,14 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           if (rfqState.cancelled) return;
           send(makeQuote('Open'));
 
-          // Refresh every 2s while open
+          // Refresh every 2s while open (client gets ~4 updates before 10s expiry)
           const refresh = setInterval(() => {
             if (rfqState.cancelled || Date.now() >= expiresAt.getTime()) {
               clearInterval(refresh);
               if (!rfqState.cancelled) {
                 send(makeQuote('Canceled'));
                 activeRfqs.delete(quoteReqId);
+                console.log(`[RFQ] ${quoteReqId} expired after 10s`);
               }
               return;
             }
@@ -159,71 +176,66 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     // --- NEWORDERSINGLE (RFQ fill) ---
     if (msg.type === 'NewOrderSingle' && Array.isArray(msg.data)) {
       for (const item of msg.data) {
-        const orderId = randomUUID();
-        const clOrdId = item.ClOrdID;
-        const side = item.Side;
-        const qty = item.OrderQty || '10000';
-        const symbol = item.Symbol || 'USDT-MXN';
+        const orderId  = randomUUID();
+        const clOrdId  = item.ClOrdID;
+        const side     = item.Side;
+        const qty      = item.OrderQty || '10000';
+        const symbol   = item.Symbol   || 'USDT-MXN';
+        const rfqId    = item.RFQID;
+        const quoteId  = item.QuoteID;
+        // Buy = we buy USDT from LP → LP charges offer; Sell = we sell USDT to LP → LP pays bid
         const fillPrice = side === 'Sell' ? bid() : offer();
-        const rfqId = item.RFQID;
-        const quoteId = item.QuoteID;
 
-        console.log(`[ORDER] ClOrdID=${clOrdId} Side=${side} Qty=${qty} FillPx=${fillPrice}`);
+        console.log(`[ORDER] ClOrdID=${clOrdId} Side=${side} Qty=${qty} Px=${fillPrice}`);
 
         const makeExec = (execType: string, ordStatus: string, extra: object = {}) => ({
           type: 'ExecutionReport',
           data: [{
-            OrderID: orderId, ClOrdID: clOrdId, ExecType: execType, OrdStatus: ordStatus,
-            Symbol: symbol, Side: side, OrderQty: qty, CumQty: '0', AvgPx: '0',
+            OrderID: orderId, ClOrdID: clOrdId,
+            ExecType: execType, OrdStatus: ordStatus,
+            Symbol: symbol, Side: side,
+            OrderQty: qty, CumQty: '0', AvgPx: '0',
             RFQID: rfqId, QuoteID: quoteId,
             Timestamp: new Date().toISOString(),
             ...extra,
           }],
         });
 
-        // PendingNew
         send(makeExec('PendingNew', 'PendingNew'));
 
-        // New after 100ms
         const t1 = setTimeout(() => {
           send(makeExec('New', 'New'));
         }, 100);
         timeouts.push(t1);
 
-        // Trade after 400ms
         const t2 = setTimeout(() => {
           const lastAmt = (parseFloat(qty) * fillPrice).toFixed(2);
           send(makeExec('Trade', 'Filled', {
             CumQty: qty, AvgPx: fillPrice.toString(),
             LastPx: fillPrice.toString(), LastQty: qty, LastAmt: lastAmt,
           }));
-
-          // Trade message
           send({
             type: 'Trade', data: [{
               TradeID: randomUUID(), OrderID: orderId, ClOrdID: clOrdId,
-              Symbol: symbol, Side: side, LastPx: fillPrice.toString(),
-              LastQty: qty, LastAmt: lastAmt, Timestamp: new Date().toISOString(),
+              Symbol: symbol, Side: side,
+              LastPx: fillPrice.toString(), LastQty: qty, LastAmt: lastAmt,
+              Timestamp: new Date().toISOString(),
             }],
           });
-
-          // Quote → Filled
           send({
             type: 'Quote', data: [{
               RFQID: rfqId, QuoteReqID: '', QuoteID: quoteId,
               QuoteStatus: 'Filled', Symbol: symbol, Currency: 'USDT',
-              OrderQty: qty, BidPx: bid().toString(),
-              BidAmt: (bid() * parseFloat(qty)).toFixed(2),
-              OfferPx: offer().toString(),
-              OfferAmt: (offer() * parseFloat(qty)).toFixed(2),
+              OrderQty: qty,
+              BidPx: bid().toString(),   BidAmt:   (bid()   * parseFloat(qty)).toFixed(2),
+              OfferPx: offer().toString(), OfferAmt: (offer() * parseFloat(qty)).toFixed(2),
               AmountCurrency: 'MXN',
               ValidUntilTime: new Date().toISOString(),
-              EndTime: new Date().toISOString(),
-              Timestamp: new Date().toISOString(),
-              SubmitTime: new Date().toISOString(),
+              EndTime:        new Date().toISOString(),
+              Timestamp:      new Date().toISOString(),
+              SubmitTime:     new Date().toISOString(),
             }],
           });
-
           console.log(`[FILL] OrderID=${orderId} Side=${side} Qty=${qty} Px=${fillPrice}`);
         }, 400);
         timeouts.push(t2);
@@ -235,12 +247,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     if (msg.type === 'QuoteCancelRequest' && Array.isArray(msg.data)) {
       for (const item of msg.data) {
         const quoteReqId = item.QuoteReqID;
-        const rfqId = item.RFQID;
-        const state = activeRfqs.get(quoteReqId);
-        if (state) {
-          state.cancelled = true;
-          activeRfqs.delete(quoteReqId);
-        }
+        const rfqId      = item.RFQID;
+        const state      = activeRfqs.get(quoteReqId);
+        if (state) { state.cancelled = true; activeRfqs.delete(quoteReqId); }
         send({
           type: 'Quote', data: [{
             RFQID: rfqId, QuoteReqID: quoteReqId, QuoteID: randomUUID(),
@@ -248,9 +257,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             OrderQty: '0', BidPx: '0', BidAmt: '0', OfferPx: '0', OfferAmt: '0',
             AmountCurrency: 'MXN',
             ValidUntilTime: new Date().toISOString(),
-            EndTime: new Date().toISOString(),
-            Timestamp: new Date().toISOString(),
-            SubmitTime: new Date().toISOString(),
+            EndTime:        new Date().toISOString(),
+            Timestamp:      new Date().toISOString(),
+            SubmitTime:     new Date().toISOString(),
           }],
         });
         console.log(`[CANCEL] QuoteReqID=${quoteReqId}`);

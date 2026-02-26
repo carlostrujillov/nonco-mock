@@ -27,7 +27,7 @@ async function fetchMid(): Promise<void> {
 
 // Fetch immediately on startup, then every 30 seconds
 fetchMid();
-setInterval(fetchMid, 30_000);
+setInterval(fetchMid, 7_000);
 
 // Spread: 1.5 centavos each side
 function bid():   number { return +((mid - 0.015).toFixed(4)); }

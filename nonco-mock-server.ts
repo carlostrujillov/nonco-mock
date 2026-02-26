@@ -189,10 +189,11 @@ proxyWss.on('connection', (browser: WebSocket, req: IncomingMessage) => {
   console.log(`[PROXY] Client connected from ${req.socket.remoteAddress}`);
 
   // Read per-connection LP overrides from query string (for multi-LP support)
-  const urlParams  = new URL(req.url ?? '', `http://localhost`).searchParams;
-  const apiKey     = urlParams.get('lp_key')    || NONCO_API_KEY;
-  const apiSecret  = urlParams.get('lp_secret') || NONCO_API_SECRET;
-  const host       = urlParams.get('lp_host')   || NONCO_HOST;
+// DESPUÉS (correcto):
+const lpId      = (urlParams.get('lp_id') ?? '').toUpperCase().replace(/[^A-Z0-9_]/g, '');
+const apiKey    = process.env[`NONCO_API_KEY_${lpId}`]    || NONCO_API_KEY    || '';
+const apiSecret = process.env[`NONCO_API_SECRET_${lpId}`] || NONCO_API_SECRET || '';
+const host      = process.env[`NONCO_HOST_${lpId}`]       || NONCO_HOST       || 'noncouat.com';
 
   if (!apiKey || !apiSecret) {
     console.error('[PROXY] Missing credentials — closing connection');
@@ -225,7 +226,8 @@ proxyWss.on('connection', (browser: WebSocket, req: IncomingMessage) => {
 
   upstream.on('close', (code, reason) => {
     console.log(`[PROXY] Upstream closed: ${code} ${reason}`);
-    if (browser.readyState === WebSocket.OPEN) browser.close(code, reason.toString());
+const safeCode = (code >= 1000 && code <= 4999) ? code : 1001;
+if (browser.readyState === WebSocket.OPEN) browser.close(safeCode, reason.toString());
   });
 
   upstream.on('error', (err) => {

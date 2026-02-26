@@ -226,7 +226,7 @@ const upstream = new WebSocket(upstreamUrl);
     console.log(`[PROXY] Upstream closed: ${code} ${reason}`);
     const safeCode = (code >= 1000 && code <= 4999) ? code : 1001;
     if (browser.readyState === WebSocket.OPEN)
-      browser.close(safeCode, reason.toString());
+      browser.close(safeCode, Buffer.isBuffer(reason) ? reason.toString('utf8') : String(reason));
   });
 
   upstream.on('error', (err) => {

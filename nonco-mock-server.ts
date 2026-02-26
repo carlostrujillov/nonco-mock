@@ -6,9 +6,10 @@ const PORT = parseInt(process.env.PORT || '8787', 10);
 
 // ─── Nonco upstream config (for real proxy path) ───────────────────────────
 // Set these in Railway environment variables:
-//   NONCO_API_KEY    → your Nonco API key
-//   NONCO_API_SECRET → your Nonco API secret
-//   NONCO_HOST       → noncouat.com (UAT) or noncotrading.com (PROD)
+//   NONCO_API_KEY_SANDBOX    → Nonco UAT API key
+//   NONCO_API_SECRET_SANDBOX → Nonco UAT API secret
+//   NONCO_HOST_SANDBOX       → noncouat.com
+//   (For prod: NONCO_API_KEY_PROD, NONCO_API_SECRET_PROD, NONCO_HOST_PROD)
 const NONCO_API_KEY    = process.env.NONCO_API_KEY    ?? '';
 const NONCO_API_SECRET = process.env.NONCO_API_SECRET ?? '';
 const NONCO_HOST       = process.env.NONCO_HOST       ?? 'noncouat.com';
@@ -27,6 +28,8 @@ function buildAuthHeaders(apiKey: string, apiSecret: string, host: string) {
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');
+  console.log(`[PROXY] message to sign: "GET\\n${ts}\\n${host}\\n/ws/v1"`);
+  console.log(`[PROXY] ApiKey=${apiKey} Timestamp=${ts} ApiSign=${sig}`);
   return { ApiKey: apiKey, ApiTimestamp: ts, ApiSign: sig };
 }
 
@@ -188,36 +191,39 @@ const proxyWss = new WebSocketServer({ noServer: true });
 proxyWss.on('connection', (browser: WebSocket, req: IncomingMessage) => {
   console.log(`[PROXY] Client connected from ${req.socket.remoteAddress}`);
 
-  // Read per-connection LP overrides from query string (for multi-LP support)
-// DESPUÉS (correcto):
-const lpId      = (urlParams.get('lp_id') ?? '').toUpperCase().replace(/[^A-Z0-9_]/g, '');
-const apiKey    = process.env[`NONCO_API_KEY_${lpId}`]    || NONCO_API_KEY    || '';
-const apiSecret = process.env[`NONCO_API_SECRET_${lpId}`] || NONCO_API_SECRET || '';
-const host      = process.env[`NONCO_HOST_${lpId}`]       || NONCO_HOST       || 'noncouat.com';
+  // Read lp_id from query string and look up credentials from env vars
+  const urlParams = new URL(req.url ?? '', `http://localhost`).searchParams;
+  const lpId      = (urlParams.get('lp_id') ?? '').toUpperCase().replace(/[^A-Z0-9_]/g, '');
+  const apiKey    = process.env[`NONCO_API_KEY_${lpId}`]    || NONCO_API_KEY    || '';
+  const apiSecret = process.env[`NONCO_API_SECRET_${lpId}`] || NONCO_API_SECRET || '';
+  const host      = process.env[`NONCO_HOST_${lpId}`]       || NONCO_HOST       || 'noncouat.com';
+
+  console.log(`[PROXY] LP=${lpId} host=${host} hasKey=${!!apiKey} hasSecret=${!!apiSecret}`);
 
   if (!apiKey || !apiSecret) {
-    console.error('[PROXY] Missing credentials — closing connection');
+    console.error(`[PROXY] Missing credentials for LP: ${lpId}`);
     browser.close(1008, 'Missing LP credentials');
     return;
   }
 
-  const headers    = buildAuthHeaders(apiKey, apiSecret, host);
+  const headers     = buildAuthHeaders(apiKey, apiSecret, host);
   const upstreamUrl = `wss://${host}/ws/v1`;
 
   console.log(`[PROXY] Connecting to upstream: ${upstreamUrl}`);
-  console.log(`[PROXY] ApiKey=${headers.ApiKey} Timestamp=${headers.ApiTimestamp}`);
 
   const upstream = new WebSocket(upstreamUrl, [], {
     headers: {
       'ApiKey':       headers.ApiKey,
       'ApiTimestamp': headers.ApiTimestamp,
       'ApiSign':      headers.ApiSign,
+      'Host':         host,
+      'Origin':       `https://${host}`,
     },
   });
 
   upstream.on('open', () => {
-    console.log(`[PROXY] Upstream open`);
-    browser.send(JSON.stringify({ type: 'proxy_connected', host }));
+    console.log(`[PROXY] Upstream open for LP=${lpId}`);
+    browser.send(JSON.stringify({ type: 'proxy_connected', host, lp_id: lpId }));
   });
 
   upstream.on('message', (data) => {
@@ -226,8 +232,9 @@ const host      = process.env[`NONCO_HOST_${lpId}`]       || NONCO_HOST       ||
 
   upstream.on('close', (code, reason) => {
     console.log(`[PROXY] Upstream closed: ${code} ${reason}`);
-const safeCode = (code >= 1000 && code <= 4999) ? code : 1001;
-if (browser.readyState === WebSocket.OPEN) browser.close(safeCode, reason.toString());
+    const safeCode = (code >= 1000 && code <= 4999) ? code : 1001;
+    if (browser.readyState === WebSocket.OPEN)
+      browser.close(safeCode, reason.toString());
   });
 
   upstream.on('error', (err) => {
@@ -241,7 +248,7 @@ if (browser.readyState === WebSocket.OPEN) browser.close(safeCode, reason.toStri
   });
 
   browser.on('close', () => {
-    console.log('[PROXY] Browser disconnected');
+    console.log(`[PROXY] Browser disconnected for LP=${lpId}`);
     if (upstream.readyState === WebSocket.OPEN) upstream.close(1000, 'Browser disconnected');
   });
 });

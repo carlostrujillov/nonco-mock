@@ -7,27 +7,30 @@ const PORT = parseInt(process.env.PORT || '8787', 10);
 // --- Real USD/MXN price feed from Yahoo Finance ---
 let mid = 17.25; // fallback until first fetch
 
+// TO:
 async function fetchMid(): Promise<void> {
   try {
-    const res = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/USDMXN=X', {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-    });
+    const res = await fetch('https://open.er-api.com/v6/latest/USD');
     const data = await res.json() as any;
-    const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
+    const price = data?.rates?.MXN;
     if (price && typeof price === 'number') {
       mid = price;
-      console.log(`[MID] USD/MXN = ${mid.toFixed(4)} (fetched from Yahoo)`);
+      console.log(`[MID] USD/MXN = ${mid.toFixed(4)} (fetched from ExchangeRate-API)`);
     } else {
       console.log(`[MID] USD/MXN = ${mid.toFixed(4)} (cached — bad response)`);
     }
-  } catch {
+  } catch (err) {
+    console.log(`[MID] USD/MXN = ${mid.toFixed(4)} (cached — fetch failed: ${err})`);
+  }
+}
+catch {
     console.log(`[MID] USD/MXN = ${mid.toFixed(4)} (cached — fetch failed)`);
   }
 }
 
 // Fetch immediately on startup, then every 30 seconds
 fetchMid();
-setInterval(fetchMid, 7_000);
+setInterval(fetchMid, 60_000);
 
 // Spread: 1.5 centavos each side
 function bid():   number { return +((mid - 0.015).toFixed(4)); }

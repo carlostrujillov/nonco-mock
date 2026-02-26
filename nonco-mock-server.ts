@@ -207,19 +207,11 @@ proxyWss.on('connection', (browser: WebSocket, req: IncomingMessage) => {
   }
 
   const headers     = buildAuthHeaders(apiKey, apiSecret, host);
-  const upstreamUrl = `wss://${host}/ws/v1`;
+const upstreamUrl = `wss://${host}/ws/v1?ApiKey=${encodeURIComponent(headers.ApiKey)}&ApiTimestamp=${encodeURIComponent(headers.ApiTimestamp)}&ApiSign=${encodeURIComponent(headers.ApiSign)}`;
 
-  console.log(`[PROXY] Connecting to upstream: ${upstreamUrl}`);
+console.log(`[PROXY] Connecting to upstream: wss://${host}/ws/v1 (credentials as query params)`);
 
-  const upstream = new WebSocket(upstreamUrl, [], {
-    headers: {
-      'ApiKey':       headers.ApiKey,
-      'ApiTimestamp': headers.ApiTimestamp,
-      'ApiSign':      headers.ApiSign,
-      'Host':         host,
-      'Origin':       `https://${host}`,
-    },
-  });
+const upstream = new WebSocket(upstreamUrl);
 
   upstream.on('open', () => {
     console.log(`[PROXY] Upstream open for LP=${lpId}`);

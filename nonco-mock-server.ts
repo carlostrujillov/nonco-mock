@@ -4,10 +4,9 @@ import { randomUUID } from 'crypto';
 
 const PORT = parseInt(process.env.PORT || '8787', 10);
 
-// --- Real USD/MXN price feed from Yahoo Finance ---
-let mid = 17.25; // fallback until first fetch
+// --- Real USD/MXN price feed from ExchangeRate-API ---
+let mid = 17.165; // fallback until first fetch
 
-// TO:
 async function fetchMid(): Promise<void> {
   try {
     const res = await fetch('https://open.er-api.com/v6/latest/USD');
@@ -23,12 +22,8 @@ async function fetchMid(): Promise<void> {
     console.log(`[MID] USD/MXN = ${mid.toFixed(4)} (cached — fetch failed: ${err})`);
   }
 }
-catch {
-    console.log(`[MID] USD/MXN = ${mid.toFixed(4)} (cached — fetch failed)`);
-  }
-}
 
-// Fetch immediately on startup, then every 30 seconds
+// Fetch immediately on startup, then every 60 seconds
 fetchMid();
 setInterval(fetchMid, 60_000);
 
@@ -118,10 +113,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         const orderQty = item.OrderQty || '10000';
         const symbol   = item.Symbol   || 'USDT-MXN';
 
-        // RFQ lasts 10 seconds
         const expiresAt = new Date(Date.now() + 15_000);
 
-        console.log(`[RFQ] QuoteReqID=${quoteReqId} qty=${orderQty} expires in 10s`);
+        console.log(`[RFQ] QuoteReqID=${quoteReqId} qty=${orderQty} expires in 15s`);
 
         const rfqState = { cancelled: false };
         activeRfqs.set(quoteReqId, rfqState);
@@ -129,41 +123,38 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         const makeQuote = (status: string) => ({
           type: 'Quote',
           data: [{
-            RFQID:         rfqId,
-            QuoteReqID:    quoteReqId,
-            QuoteID:       randomUUID(),
-            QuoteStatus:   status,
-            Symbol:        symbol,
-            Currency:      'USDT',
-            OrderQty:      orderQty,
-            BidPx:         bid().toString(),
-            BidAmt:        (bid()   * parseFloat(orderQty)).toFixed(2),
-            OfferPx:       offer().toString(),
-            OfferAmt:      (offer() * parseFloat(orderQty)).toFixed(2),
-            AmountCurrency:'MXN',
-            ValidUntilTime: new Date(Date.now() + 10_000).toISOString(), // price valid 3s
-            EndTime:        expiresAt.toISOString(),                     // RFQ ends at 10s
+            RFQID:          rfqId,
+            QuoteReqID:     quoteReqId,
+            QuoteID:        randomUUID(),
+            QuoteStatus:    status,
+            Symbol:         symbol,
+            Currency:       'USDT',
+            OrderQty:       orderQty,
+            BidPx:          bid().toString(),
+            BidAmt:         (bid()   * parseFloat(orderQty)).toFixed(2),
+            OfferPx:        offer().toString(),
+            OfferAmt:       (offer() * parseFloat(orderQty)).toFixed(2),
+            AmountCurrency: 'MXN',
+            ValidUntilTime: new Date(Date.now() + 10_000).toISOString(),
+            EndTime:        expiresAt.toISOString(),
             Timestamp:      new Date().toISOString(),
             SubmitTime:     new Date().toISOString(),
           }],
         });
 
-        // PendingNew immediately
         send(makeQuote('PendingNew'));
 
-        // Open after 150ms
         const t1 = setTimeout(() => {
           if (rfqState.cancelled) return;
           send(makeQuote('Open'));
 
-          // Refresh every 2s while open (client gets ~4 updates before 10s expiry)
           const refresh = setInterval(() => {
             if (rfqState.cancelled || Date.now() >= expiresAt.getTime()) {
               clearInterval(refresh);
               if (!rfqState.cancelled) {
                 send(makeQuote('Canceled'));
                 activeRfqs.delete(quoteReqId);
-                console.log(`[RFQ] ${quoteReqId} expired after 10s`);
+                console.log(`[RFQ] ${quoteReqId} expired after 15s`);
               }
               return;
             }
@@ -179,14 +170,13 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     // --- NEWORDERSINGLE (RFQ fill) ---
     if (msg.type === 'NewOrderSingle' && Array.isArray(msg.data)) {
       for (const item of msg.data) {
-        const orderId  = randomUUID();
-        const clOrdId  = item.ClOrdID;
-        const side     = item.Side;
-        const qty      = item.OrderQty || '10000';
-        const symbol   = item.Symbol   || 'USDT-MXN';
-        const rfqId    = item.RFQID;
-        const quoteId  = item.QuoteID;
-        // Buy = we buy USDT from LP → LP charges offer; Sell = we sell USDT to LP → LP pays bid
+        const orderId   = randomUUID();
+        const clOrdId   = item.ClOrdID;
+        const side      = item.Side;
+        const qty       = item.OrderQty || '10000';
+        const symbol    = item.Symbol   || 'USDT-MXN';
+        const rfqId     = item.RFQID;
+        const quoteId   = item.QuoteID;
         const fillPrice = side === 'Sell' ? bid() : offer();
 
         console.log(`[ORDER] ClOrdID=${clOrdId} Side=${side} Qty=${qty} Px=${fillPrice}`);
@@ -230,7 +220,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
               RFQID: rfqId, QuoteReqID: '', QuoteID: quoteId,
               QuoteStatus: 'Filled', Symbol: symbol, Currency: 'USDT',
               OrderQty: qty,
-              BidPx: bid().toString(),   BidAmt:   (bid()   * parseFloat(qty)).toFixed(2),
+              BidPx: bid().toString(),    BidAmt:   (bid()   * parseFloat(qty)).toFixed(2),
               OfferPx: offer().toString(), OfferAmt: (offer() * parseFloat(qty)).toFixed(2),
               AmountCurrency: 'MXN',
               ValidUntilTime: new Date().toISOString(),

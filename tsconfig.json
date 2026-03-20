@@ -8,27 +8,3 @@
   },
   "include": ["nonco-mock-server.ts"]
 }
-```
-
-Then push both changes to GitHub. Render will redeploy automatically.
-
----
-
-## Step 2 — Fix Render's Build & Start settings
-
-Go to your Render dashboard → your mock server service → **Settings**.
-
-- **Build Command:** `npm install && npm run build`
-- **Start Command:** `npm start`
-
-Save and redeploy.
-
----
-
-## Step 3 — Fix the MOCK LP row in Supabase
-
-Go to [supabase.com](https://supabase.com) → your project → **Table Editor** → table `lp_counterparties`.
-
-Find the row where `lp_secret_id = MOCK`. Edit the `direct_ws_url` column and set it to:
-```
-wss://YOUR-RENDER-URL.onrender.com/ws/v1

@@ -2,7 +2,8 @@
   "name": "nonco-mock",
   "version": "1.0.0",
   "scripts": {
-    "start": "npx ts-node nonco-mock-server.ts"
+    "build": "tsc --outDir dist",
+    "start": "node dist/nonco-mock-server.js"
   },
   "dependencies": {
     "ws": "^8.19.0",
